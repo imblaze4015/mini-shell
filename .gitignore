@@ -1,0 +1,13 @@
+#Object files
+*.o 
+
+#Executable
+mini-shell
+
+#Editor files (Neovim / NVChad)
+
+*.swp
+*~
+.nvim/
+*.undo
+Session.vim
