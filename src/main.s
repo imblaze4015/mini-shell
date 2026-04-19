@@ -45,16 +45,19 @@ _start:
     #Back up the number of bytes from buffer
     mov r8, rax
     
-    #Check if user input is equal to 5 (e,x,i,t,\n)
-    cmp r8, 5
-
-    #If not equal to 5 then echo back the input 
-    jne echo_back
+    #Change the new line to 0 for null terminate
+    lea rdi, [rip + user_input]
+    add rdi, rax
+    dec rdi
+    mov byte ptr [rdi], 0
 
     #Check if the user type exit, If yes then jump to exit
     mov eax, dword ptr [rip + user_input]
-    mov edx, dword ptr [rip + exit_cmd]
-    cmp eax, edx
+    cmp eax, dword ptr [rip + exit_cmd]
+    jne echo_back
+    
+    #Check the 5th byte is null
+    cmp byte ptr [rip + user_input + 4], 0
     je do_exit
   
   echo_back: 
@@ -64,6 +67,14 @@ _start:
     mov edi, 1
     lea rsi, [rip + user_input]
     syscall
+    
+    #Print new line before returning back to loop
+    mov eax, 1
+    mov edi, 1
+    lea rsi, [rip + newline]
+    mov edx, 1
+    syscall
+
     jmp main_loop
   
 do_exit:
