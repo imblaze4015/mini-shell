@@ -11,17 +11,16 @@
   exit_cmd:
     .string "exit"
 
-  parent_msg:
-    .string "Parent\n"
-  parent_msg_len = . - parent_msg
-
-  child_msg:
-    .string "Child\n"
-  child_msg_len = . - child_msg
+  execve_fail_msg:
+    .string "execve failed\n"
+  execve_fail_msg_len = . - execve_fail_msg
 
   fork_fail_msg:
     .string "Fork failed\n"
   fork_fail_msg_len = . - fork_fail_msg
+
+  cmd_ls:
+    .string "/bin/ls"
 
 .section .bss
   user_input:
@@ -53,7 +52,7 @@ _start:
     test eax, eax
     jz print_new_line_and_exit
     
-    #Check if the user pressi just Enter, If yes then jump to main_loop
+    #Check if the user press just Enter, If yes then jump to main_loop
     cmp eax, 1
     je main_loop
     
@@ -76,7 +75,7 @@ _start:
     je do_exit
   
   not_exit_check:
-    #Load the address user_input to rdi and argv tp rsi
+    #Load the address user_input to rdi and argv to rsi
     lea rdi, [rip + user_input]
     lea rsi, [rip + argv]
 
@@ -168,23 +167,23 @@ _start:
     xor edx, edx
     xor r10, r10
     syscall
-
-    #Print "Parent\n"
-    mov eax, 1
-    mov edi, 1
-    lea rsi, [rip + parent_msg]
-    mov edx, parent_msg_len
-    syscall
   
     pop rbx
     ret 
 
   child_process:
-    #Print "Child\n"
+    # sys_execve(argv[0], argv, NULL)
+    mov rdi, [rip + argv]
+    lea rsi, [rip + argv]
+    xor edx, edx
+    mov eax, 59
+    syscall
+
+    # If execve returns, it failed
     mov eax, 1
     mov edi, 1
-    lea rsi, [rip + child_msg]
-    mov edx, child_msg_len
+    lea rsi, [rip + execve_fail_msg]
+    mov edx, execve_fail_msg_len
     syscall
 
     #Child exits (important! or it will return and run main_loop)
