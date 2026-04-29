@@ -1,212 +1,181 @@
 .intel_syntax noprefix
 .global _start
 
-.section .rodata
-  prompt:
-    .string "-> "
 
-  newline:
-    .string "\n"
-  
-  exit_cmd:
-    .string "exit"
+#Define the syscalls so that no need to remember them and for readability
+.equ sys_fork, 57
+.equ sys_execve, 59
+.equ sys_exit, 60
+.equ sys_wait4, 61
 
-  execve_fail_msg:
-    .string "execve failed\n"
-  execve_fail_msg_len = . - execve_fail_msg
-
-  fork_fail_msg:
-    .string "Fork failed\n"
-  fork_fail_msg_len = . - fork_fail_msg
-
-  cmd_ls:
-    .string "/bin/ls"
-
+#Here where buffers are declared.
 .section .bss
-  user_input:
-    .space 256
-  
-  argv:
-    .space 80
+  user_input: .space 256            #Reserve 256 bytes for user input
+  argv: .space 10 * 8               #Reserve 10 slots of array with 8 bytes each
 
+#Here where read only data are declared. 
+.section .rodata
+  prompt: .string "-> "
+  new_line: .string "\n"
+  exit_cmd: .string "exit"
+  echo_cmd: .string "echo"                                                                        
+
+
+#Here where are the instructions are written
 .section .text
+
 _start:
 
-  main_loop:
-    
-    #Print prompt "-> "
-    mov eax, 1
-    mov edi, 1
-    lea rsi, [rip + prompt]
-    mov edx, 3
-    syscall
-    
-    #Catch user input and place it to buffer
-    mov eax, 0
-    mov edi, 0
-    lea rsi, [rip + user_input]
-    mov edx, 256
-    syscall
-    
-    #Check if the user press CTRL + D, If yes add new line then exit
-    test eax, eax
-    jz print_new_line_and_exit
-    
-    #Check if the user press just Enter, If yes then jump to main_loop
-    cmp eax, 1
-    je main_loop
-    
-    #Back up the number of bytes from buffer
-    mov r8, rax
-    
-    #Change the new line to 0 for null terminate
-    lea rdi, [rip + user_input]
-    add rdi, r8
-    dec rdi
-    mov byte ptr [rdi], 0
+get_user_input:
 
-    #Check if the user type exit, If yes then jump to exit
-    mov eax, dword ptr [rip + user_input]
-    cmp eax, dword ptr [rip + exit_cmd]
-    jne not_exit_check
-    
-    #Check the 5th byte is null
-    cmp byte ptr [rip + user_input + 4], 0
-    je do_exit
+  #Print "-> "
+  lea rsi, [rip + prompt]           #Load the address of prompt to rsi
+  mov edx, 3
+  call print
   
-  not_exit_check:
-    #Load the address user_input to rdi and argv to rsi
-    lea rdi, [rip + user_input]
-    lea rsi, [rip + argv]
+  #Get user input and place to to buffer "user_input"
+  mov eax, 0                        #sys_write
+  mov edi, 0                        #stdin
+  lea rsi, [rip + user_input]       #Load the user "user_input" buffer. This is where we put 
+                                    # - the input
 
-  skip_leading_spaces:
-    #Check if end of string (NULL)? If yes then jmp to finish_tokenize
-    mov al, [rdi]
-    test al, al
-    jz finish_tokenize
-    
-    #If space, Move to the next byte then repeat. Else jump to store_arg
-    cmp al, 32
-    jne store_arg
-    inc rdi
-    jmp skip_leading_spaces
-    
-  store_arg:
-    #Store the argument to arg and move to the next byte
-    mov [rsi], rdi
-    add rsi, 8
+  mov edx, 256                      #We are only taking exactly 256 bytes or characters. 
+                                    # - To avoid memory leak                       
+  syscall
+
+  #From here on RAX holding the number of characters from user_input including "space" and 
+  # - "new line"
   
-  tokenize_loop:
-    #Get the current char
-    mov al, [rdi]
-    
-    #Check if NULL
-    test al, al
-    jz finish_tokenize
-    
-    #Check if space
-    cmp al, 32
-    je handle_space
-    
-    #Move to the next char and jmp to tokenize_loop
-    inc rdi
-    jmp tokenize_loop
+  #Check rax == 0. If the user press CTRL + D it means the program didn't catch anything.
+  test eax, eax                     #Did the user press CTRL + D? If yes then print new line and
+  jz exit_and_print_newline
 
-  handle_space:
-    #Change space to (NULL) and move to the next bye
-    mov byte ptr [rdi], 0
-    inc rdi
+  #Check if rax == 1. If the user just press enter without typing anything the program will
+  # - only catch 1 value. Because '\n' is counted as one. If yes then restart the program
+  cmp rax, 1
+  je get_user_input
+
+  #Change end of string from "\n" to "0". Because later on, execve need to know where to stop
+  # - and that's the purpose of "0"
+
+  add rsi, rax                      #As of the moment rsi is pointing at starting address of 
+  dec rsi                           # - input so by adding rax, it is now pointing one byte ahead
+  mov byte ptr [rsi], 0             # - of the last char, that's why we are decreasing one byte
+                                    # - and change the new line to NULL or "0"
+                             
+
+  #Check if the user typed "exit" and enter? If yes then exit the program
+  mov esi, dword ptr [rip + user_input]
+  mov edi, dword ptr [rip + exit_cmd]
+  cmp esi, edi
+  jne tokenize
+
+  cmp byte ptr [rip + user_input + 4], 0
+  je exit
+
+
+#In this section, User inputs should be tokenized. All spaces should be replaced to NULL. Later on the execve
+# - need to know the start and end of every word.
+tokenize:
+  lea rsi, [rip + user_input]        #Reload the user_input in rsi.
+  lea rdi, [rip + argv]              #Now rdi holding the address of argv. This is where put the tokenize words
+
+  #Skip leading spaces. If the user typed "  Hello0", It should skip the leading spaces and start with "H"
+  .skip_leading_spaces:
+    cmp byte ptr [rsi], 32           #Check if the current byte holding a space
+    jne .store_arg                   #Not a space? Then it's the start of character
+    inc rsi                          #It's a space, Move to the next byte
+    jmp .skip_leading_spaces
+
+
+  .store_arg:
+    mov [rdi], rsi                  #Store the address of each word inside argv
+    add rdi, 8                      #Now rdi pointing on the next 8 byte for the next arg
   
-  handle_multiple_spaces:
-    #Another space? If yes move to the next bye and repeat, Else jump to check_next_word
-    mov al, [rdi]
-    cmp al, 32
-    jne check_next_word
-    inc rdi
-    jmp handle_multiple_spaces
+  #In this section we found the first character of word. Now it's time to find the last char of the word
+  .scan_word:
+    cmp byte ptr [rsi], 0           #Check if NULL. What if the user just typed spaces then press enter?
+    je .finish_tokenize             #If NULL then  go back to get_user_input
+
+    cmp byte ptr [rsi], 32          #Check if it's end of the word.
+    je .terminate_word              #If end of the word then we need to put a NULL at the end of the word
+
+    inc rsi                         #Not a NULL and not the end of the word either so let's move to the next byte
+    jmp .scan_word
+
+  #In this section we found the last letter of the word and now we need to put a NULL at the end of each word.
+  .terminate_word:
+    mov byte ptr [rsi], 0           #We mark the end of the word. This time we check if there is another word
+    inc rsi
+    jmp .skip_leading_spaces
+
+  .finish_tokenize:
+    mov qword ptr [rdi], 0
+
+#In this section we will use fork. We will create a parent and child process. In Linux
+fork:
+  #Here we clone our current process and that will be the child process. It will carry out the execve
+  mov eax, sys_fork
+  syscall
+
+  #In this moment we have two identical process running in the background, Parent and child. Even the state of
+  # - even the registers are similar aside from rax. The rax in parent holding the child PID and the child rax
+  # - holding 0. 
+  test eax, eax                     #Is it the child or the parent
+  jz child_process                  #If the child then jump to child process if not then continue to parent
+
+#We will ask the parent to stop it's process and have the child finish it's process
+parent_process:
+  mov r8, rax                       #Backup the PID to r8 because sys_wait4 will use the rax
+
+  #The parent will stop until the child finished it's process then go back to get_ser_input
+  mov eax, sys_wait4                
+  mov rdi, r8                       #Pass the PID of child so that system know which child to wait
+  xor edx, edx                      #I don't need the how the status report of the child
+  xor r10, r10                      #I don't need the memory usage report of the child
+  syscall
+
+  jmp get_user_input
+
+#In this section, the child will stop copying the parent and will execute it's own process
+child_process:
+  lea rsi, [rip + argv]
+  mov rdi, [rsi]
+  mov eax, sys_execve
+  xor edx, edx
+  syscall
+
+#PROCEDURES:
+
+exit:
+  mov eax, sys_exit
+  mov edi, 0
+  syscall
+
+exit_and_print_newline:
+  #Print new line
+  lea rsi, [rip + new_line]
+  mov edx, 1
+  call print
+
+  #Then exit
+  jmp exit
+
+print:
+
+  #Backup the value of rax and rdi because syscall will overwrite their values.
+  push rax 
+  push rdi 
+
+  mov eax, 1                        #sys_write
+  mov edi, 1                        #stdout
+  syscall
+
+  #Recover the value of rax and rdi 
+  pop rdi
+  pop rax
+
+  ret
 
 
-  check_next_word:
-    #End of string? If yes jump to finish_tokenize, Else jump to store_arg
-    test al, al
-    jz finish_tokenize
-    jmp store_arg
-    
-  finish_tokenize:
-    
-    mov qword ptr [rsi], 0
 
-    #Demonstrate fork
-    call demo_fork
-    jmp main_loop
-  
-  do_exit:
-    #Exit the program
-    mov eax, 60 
-    xor edi, edi
-    syscall
-
-  demo_fork:
-    #sys_fork
-    push rbx
-    mov eax, 57
-    syscall
-  
-    #Check return value
-    test eax, eax
-    jz child_process
-    js fork_error
-  
-    #Backup rax value to rbx
-    mov rbx, rax
-
-    #Wait4
-    mov rdi, rbx
-    mov eax, 61
-    xor esi, esi
-    xor edx, edx
-    xor r10, r10
-    syscall
-  
-    pop rbx
-    ret 
-
-  child_process:
-    # sys_execve(argv[0], argv, NULL)
-    mov rdi, [rip + argv]
-    lea rsi, [rip + argv]
-    xor edx, edx
-    mov eax, 59
-    syscall
-
-    # If execve returns, it failed
-    mov eax, 1
-    mov edi, 1
-    lea rsi, [rip + execve_fail_msg]
-    mov edx, execve_fail_msg_len
-    syscall
-
-    #Child exits (important! or it will return and run main_loop)
-    mov eax, 60
-    xor edi, edi
-    syscall
-
-  fork_error:
-    #Print "Fork failed\n"
-    mov eax, 1
-    mov edi, 1
-    lea rsi, [rip + fork_fail_msg]
-    mov edx, fork_fail_msg_len
-    syscall
-
-    pop rbx
-    ret
-
-  print_new_line_and_exit:
-    #Print newline before exiting on CTRL + D 
-    mov eax, 1
-    mov edi, 1
-    lea rsi, [rip + newline]
-    mov edx, 1
-    syscall
-    jmp do_exit
